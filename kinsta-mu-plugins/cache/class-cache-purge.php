@@ -73,6 +73,8 @@ class Cache_Purge {
 	 * @param object $kinsta_cache Kinsta Cache object.
 	 */
 	public function __construct( $kinsta_cache ) {
+		global $wp_rewrite;
+		global $wp_version;
 
 		$this->kinsta_cache = $kinsta_cache;
 		$this->posts_page_id = get_option( 'page_for_posts' );
@@ -81,42 +83,97 @@ class Cache_Purge {
 		$this->purge_single_happened = false;
 		$this->purge_all_happened = false;
 
-		add_action( 'transition_post_status', array( $this, 'post_transition_actions' ), 10, 3 );
-		add_action( 'post_updated', array( $this, 'post_actions' ), 10, 3 );
-		add_action( 'wp_insert_comment', array( $this, 'comment_insert_actions' ), 10, 2 );
 		add_action( 'edit_comment', array( $this, 'comment_edit_actions' ), 10, 2 );
+		add_action( 'pre_post_update', array( $this, 'post_unpublished' ), 10, 2 );
+
 		add_action( 'transition_comment_status', array( $this, 'comment_transition_actions' ), 10, 3 );
+		add_action( 'transition_post_status', array( $this, 'post_published' ), 10, 3 );
+
+		add_action( 'wp_insert_comment', array( $this, 'comment_insert_actions' ), 10, 2 );
+		add_action( 'wp_insert_post', array( $this, 'post_updated' ), 10, 3 );
+		add_action( 'wp_trash_post', array( $this, 'post_trashed' ), 10 );
 		add_action( 'wp_update_nav_menu', array( $this, 'purge_complete_caches' ) );
 	}
 
 	/**
 	 * Figures out which post changes and initiates a cache purge with that post.
 	 *
-	 * @param  string $new  New post status.
-	 * @param  string $old  Old post status.
-	 * @param  object $post WP_Post object.
+	 * @param  string $new_status New post status.
+	 * @param  string $old_status Old post status.
+	 * @param  object $post       WP_Post object.
 	 * @return void
 	 */
-	public function post_transition_actions( $new, $old, $post ) {
-		if ( ( 'publish' === $new || 'future' === $old ) && ! $this->purge_single_happened ) {
+	public function post_published( $new_status, $old_status, $post ) {
+
+		if ( $new_status === $old_status || $this->purge_single_happened ) {
+			return;
+		}
+
+		// Clear cache when the post is published.
+		if ( 'publish' === $new_status ) {
 			$this->purge_single_happened = true;
 			$this->initiate_purge( $post->ID, 'post' );
 		}
 	}
 
 	/**
-	 * Figures out which published post is updated and initiates a cache purge with that post.
+	 * Fires immediately before an existing post is updated in the database.
 	 *
-	 * @param  int    $post_ID The post ID.
-	 * @param  object $new     Post object following the update.
-	 * @param  object $old     Post object before the update.
+	 * @param int   $post_ID The Post Id.
+	 * @param array $updated Array of unslashed post data.
 	 * @return void
 	 */
-	public function post_actions( $post_ID, $new, $old ) {
-		if ( ( 'publish' === $new->post_status || 'publish' === $old->post_status ) && ! $this->purge_single_happened ) {
+	public function post_unpublished( $post_ID, $updated ) {
+		if ( $this->purge_single_happened ) {
+			return;
+		}
+
+		$post_status = get_post_status( $post_ID );
+		if ( 'publish' !== $post_status ) { // Current post status must be "publish".
+			return;
+		}
+
+		// Clear cache when the post is unpublished.
+		if ( isset( $updated['post_status'] ) && 'publish' !== $updated['post_status'] ) {
 			$this->purge_single_happened = true;
 			$this->initiate_purge( $post_ID, 'post' );
 		}
+	}
+
+	/**
+	 * Figures out which published post is updated and initiates a cache purge with that post.
+	 *
+	 * @param int     $post_id The post ID.
+	 * @param WP_Post $post_after Post object following the update.
+	 * @param bool    $update Whether this is an existing post being updated.
+	 * @return void
+	 */
+	public function post_updated( $post_id, $post, $update ) {
+
+		if ( $this->purge_single_happened || wp_is_post_autosave( $post_id ) || wp_is_post_revision( $post_id ) ) {
+			return;
+		}
+
+		// Clear cache when the post updated, and only when it's already / still published.
+		if ( $update === true && 'publish' === get_post_status( $post_id ) ) {
+			$this->purge_single_happened = true;
+			$this->initiate_purge( $post_id, 'post' );
+		}
+	}
+
+	/**
+	 * Clear cache when the post is going to Trash.
+	 *
+	 * @param int $post_ID Post ID.
+	 * @return void
+	 */
+	public function post_trashed( $post_ID ) {
+		if ( $this->purge_single_happened ) {
+			return;
+		}
+
+		$this->purge_single_happened = true;
+		$this->initiate_purge( $post_ID, 'post' );
 	}
 
 	/**
@@ -225,7 +282,13 @@ class Cache_Purge {
 
 		$archives = $this->get_post_archives_list( $post );
 
-		$purge_list['throttled'] = $archives;
+		$purge_list = array(
+			'throttled' => $archives,
+			'immediate' => array(
+				'single' => array(),
+				'group' => array(),
+			),
+		);
 
 		// Immediately remove first three pages of archives.
 		foreach ( $archives['group'] as $key => $url ) {
@@ -375,6 +438,11 @@ class Cache_Purge {
 		unset( $taxonomies['link_category'] );
 		$taxonomies = array_values( $taxonomies );
 		$terms = wp_get_object_terms( $post->ID, $taxonomies );
+
+		$purge = array(
+			'group' => array(),
+			'single' => array(),
+		);
 
 		// Author Archive.
 		$purge['group']['author'] = get_author_posts_url( $post->post_author );
