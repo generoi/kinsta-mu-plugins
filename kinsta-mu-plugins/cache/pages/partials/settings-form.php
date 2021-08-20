@@ -51,7 +51,6 @@ if ( ! defined( 'ABSPATH' ) ) { // If this file is called directly.
 						'custom-url-type',
 						'single',
 						'',
-						false,
 						array(
 							'single' => 'Single Path',
 							'group' => 'Group Path',
