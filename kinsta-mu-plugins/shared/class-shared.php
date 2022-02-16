@@ -32,7 +32,7 @@ class Shared {
 		add_action( 'admin_body_class', array( $this, 'body_classes' ) );
 
 		if ( KINSTAMU_WHITELABEL === false ) {
-			add_filter( 'admin_footer_text', [ $this, 'modify_admin_footer_text' ], 99 );
+			add_filter( 'admin_footer_text', array( $this, 'modify_admin_footer_text' ), 99 );
 		}
 	}
 
@@ -141,7 +141,7 @@ class Shared {
 	 * @param  string  $name        The option name (key).
 	 * @param  string  $value       The $name value.
 	 * @param  string  $label       The control lable.
-	 * @param  array   $options     Options to show in the select field.
+	 * @param  boolean $options     Options to show in the select field.
 	 * @param  boolean $info        Whether to show the tooltip.
 	 * @return void
 	 */

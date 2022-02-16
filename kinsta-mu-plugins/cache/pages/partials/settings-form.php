@@ -54,7 +54,8 @@ if ( ! defined( 'ABSPATH' ) ) { // If this file is called directly.
 						array(
 							'single' => 'Single Path',
 							'group' => 'Group Path',
-						)
+						),
+						false
 					);
 					$prefix_title = home_url( '/' );
 					$prefix_scheme = ( strpos( home_url(), 'https://' ) !== false ) ? 'https' : 'http';
