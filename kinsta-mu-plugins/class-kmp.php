@@ -60,6 +60,13 @@ class KMP {
 	public $banned_plugins;
 
 	/**
+	 * WP CLI instance.
+	 *
+	 * @var KMP_WPCLI
+	 */
+	public $wp_cli;
+
+	/**
 	 * Banned Plugins instance
 	 *
 	 * @var string
