@@ -27,6 +27,13 @@ class Plugin_List_Command extends WP_CLI_Command {
 	private $installed_plugins = array();
 
 	/**
+	 * Update plugins transient
+	 *
+	 * @var object
+	 */
+	private $update_plugins;
+
+	/**
 	 * List of plugins that we encourage our users to deactivate.
 	 *
 	 * @var array

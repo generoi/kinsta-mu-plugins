@@ -44,6 +44,13 @@ class Cache_Purge {
 	public $kmp;
 
 	/**
+	 * Kinsta Cache Object.
+	 *
+	 * @var Cache
+	 */
+	public $kinsta_cache;
+
+	/**
 	 * Number of pages at home or archive page to purge.
 	 *
 	 * @var int
