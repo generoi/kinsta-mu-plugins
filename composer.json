@@ -1,4 +1,5 @@
 {
   "name": "kinsta/kinsta-mu-plugins",
-  "type": "wordpress-muplugin"
+  "type": "wordpress-muplugin",
+  "homepage": "https://kinsta.com/docs/wordpress-hosting/kinsta-mu-plugin/"
 }
