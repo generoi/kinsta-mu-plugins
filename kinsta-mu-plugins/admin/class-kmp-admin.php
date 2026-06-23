@@ -9,6 +9,13 @@
 
 namespace Kinsta;
 
+use Kinsta\KMP\AdminPage;
+use Kinsta\KMP\Cache\CustomPaths;
+use Kinsta\KMP\Helpers\Whitelabel;
+
+use function Kinsta\KMP\is_whitelabel_enabled;
+use function Kinsta\KMP\whitelabel;
+
 if ( ! defined( 'ABSPATH' ) ) { // If this file is called directly.
 	die( 'No script kiddies please!' );
 }
@@ -43,6 +50,27 @@ class KMP_Admin {
 	private $view_role_or_capability;
 
 	/**
+	 * Map of cache-clearing action keys to their whitelabel menu slugs.
+	 *
+	 * @var array{"all":?string,"site":?string,"cdn":?string,"object":?string}
+	 */
+	private $clear_values;
+
+	/**
+	 * Holds the controller class for whitelabel feature.
+	 *
+	 * @var Whitelabel
+	 */
+	private Whitelabel $whitelabel;
+
+	/**
+	 * Holds the controller class for the plugin admin page.
+	 *
+	 * @var AdminPage
+	 */
+	private AdminPage $admin_page;
+
+	/**
 	 * Plugin constructor.
 	 * Sets the hooks required for the plugin's functionality.
 	 *
@@ -52,19 +80,28 @@ class KMP_Admin {
 		$this->kmp = $kmp;
 		$this->kinsta_cache = $kmp->kinsta_cache;
 		$this->view_role_or_capability = set_view_role_or_capability();
-		add_action( 'admin_enqueue_scripts', array( $this, 'assets' ) );
 
-		if ( KINSTAMU_WHITELABEL === false ) {
+		// Whitelabeling slugs, menus, etc.
+		$this->whitelabel = whitelabel();
+		$this->admin_page = new AdminPage( $this->whitelabel );
+		$this->clear_values = array(
+			'all' => $this->whitelabel->getMenuKey( 'clear-all-cache' ),
+			'site' => $this->whitelabel->getMenuKey( 'clear-site-cache' ),
+			'cdn' => $this->whitelabel->getMenuKey( 'clear-cdn-cache' ),
+			'object' => $this->whitelabel->getMenuKey( 'clear-object-cache' ),
+		);
+
+		// Only add the footer text and menu icon if whitelabel is not enabled.
+		if ( ! is_whitelabel_enabled() ) {
 			add_filter( 'admin_footer_text', array( $this, 'modify_admin_footer_text' ), 99 );
 		}
+
+		// Enqueue assets.
+		add_action( 'admin_enqueue_scripts', array( $this, 'assets' ) );
+
 		// Admin Menu and Admin Toolbar.
 		add_action( 'admin_menu', array( $this, 'admin_menu_item' ) );
 		add_action( 'admin_bar_menu', array( $this, 'admin_bar_item' ), 100 );
-
-		// Custom styling.
-		if ( KINSTAMU_WHITELABEL === false ) {
-			add_action( 'admin_head', array( $this, 'menu_icon_style' ) );
-		}
 
 		// Notice for successful cache clear.
 		add_action( 'admin_notices', array( $this, 'cleared_cache_notice' ) );
@@ -72,6 +109,7 @@ class KMP_Admin {
 		// Ajax actions for cache exclusion path management.
 		add_action( 'wp_ajax_kinsta_save_custom_path', array( $this, 'action_kinsta_save_custom_path' ) );
 		add_action( 'wp_ajax_kinsta_remove_custom_path', array( $this, 'action_kinsta_remove_custom_path' ) );
+		add_action( 'wp_ajax_kinsta_cache_save_settings', array( $this, 'action_kinsta_cache_save_settings' ) );
 
 		/**
 		 * Filter the page cache supported cache headers
@@ -79,7 +117,7 @@ class KMP_Admin {
 		 */
 		add_filter(
 			'site_status_page_cache_supported_cache_headers',
-			function( $cache_headers ) {
+			function ( $cache_headers ) {
 				// Add new header to the existing list.
 				$cache_headers['x-kinsta-cache'] = static function ( $header_value ) {
 					return false !== strpos( strtolower( $header_value ), 'hit' );
@@ -92,19 +130,18 @@ class KMP_Admin {
 	/**
 	 * Load assets in the Kinsta plugin setting page.
 	 *
-	 * @param  string $page The page slug.
 	 * @return void
 	 */
-	public function assets( $page ) {
-		if ( substr_count( $page, 'kinsta' ) === 0 ) {
+	public function assets() {
+		if ( ! $this->admin_page->isPluginPage() ) {
 			return;
 		}
 
-		wp_enqueue_style( 'kinsta-shared', $this->shared_resource_url( 'admin/assets/css/common.css' ), array(), KINSTAMU_VERSION );
+		wp_enqueue_style( $this->whitelabel->getMenuKey( 'shared' ), $this->shared_resource_url( 'admin/assets/css/common.css' ), array(), \Kinsta\KMP\VERSION );
 	}
 
 	/**
-	 * Fix missing recource issues with mu plugin's static files
+	 * Fix missing resources issues with mu plugin's static files
 	 *
 	 * It was handled by " plugin_dir_url( __FILE__ )" before we switched to this
 	 *
@@ -116,7 +153,8 @@ class KMP_Admin {
 	 * @return string URL path of the kinsta-mu-plugins.
 	 */
 	public static function shared_resource_url( $path = '' ) {
-		$mu_url = ( is_ssl() ) ? str_replace( 'http://', 'https://', WPMU_PLUGIN_URL ) : WPMU_PLUGIN_URL;
+		$base_url = defined( 'WPMU_PLUGIN_URL' ) ? (string) constant( 'WPMU_PLUGIN_URL' ) : '';
+		$mu_url = ( is_ssl() ) ? str_replace( 'http://', 'https://', $base_url ) : $base_url;
 		$full_path = $mu_url . '/kinsta-mu-plugins/' . $path;
 
 		if ( defined( 'KINSTAMU_CUSTOM_MUPLUGIN_URL' ) && KINSTAMU_CUSTOM_MUPLUGIN_URL !== '' ) {
@@ -145,44 +183,44 @@ class KMP_Admin {
 		/**
 		 * Filters whether or not Admin Menu item/page is visible.
 		 *
-		 * @param bool True to hide the Admin Menu item/page, false to show. Default is false.
+		 * @param bool $hide True to hide the Admin Menu item/page, false to show. Default is false.
 		 */
 		if ( apply_filters( 'kinsta_admin_disabled', false ) ) {
 			return;
 		}
 
-		$icon = ( KINSTAMU_WHITELABEL === false ) ? 'dashicons-cloud' : 'dashicons-cloud';
-		$title = ( KINSTAMU_WHITELABEL === false ) ? __( 'Kinsta Cache', 'kinsta-mu-plugins' ) : __( 'Server Cache', 'kinsta-mu-plugins' );
+		$icon = $this->admin_page->getMenuIcon();
+		$title = $this->admin_page->getMenuTitle();
 
 		add_menu_page(
 			$title,
 			$title,
 			$this->view_role_or_capability,
-			'kinsta-tools',
+			$this->admin_page->getMenuKey( 'tools' ),
 			array( $this, 'admin_cache_page' ),
 			$icon,
-			'3.19992919'
+			3.19992919
 		);
 
 		if ( $this->kmp->is_cdn_enabled() ) {
 			add_submenu_page(
-				'kinsta-tools',
+				$this->admin_page->getMenuKey( 'tools' ),
 				'CDN',
 				'CDN',
 				$this->view_role_or_capability,
-				'kinsta-cdn',
+				$this->admin_page->getMenuKey( 'cdn' ),
 				array( $this, 'admin_cdn_page' ),
-				'3.19992919'
+				3.19992919
 			);
 
 			add_submenu_page(
-				'kinsta-tools',
+				$this->admin_page->getMenuKey( 'tools' ),
 				'Settings',
 				'Settings',
 				$this->view_role_or_capability,
-				'kinsta-settings',
+				$this->admin_page->getMenuKey( 'settings' ),
 				array( $this, 'admin_settings_page' ),
-				'3.19992919'
+				3.19992919
 			);
 		}
 	}
@@ -198,7 +236,7 @@ class KMP_Admin {
 		/**
 		 * Filters whether or not Admin Menu item/page is visible.
 		 *
-		 * @param bool True to hide the Admin Menu item/page, false to show. Default is false.
+		 * @param bool $hide True to hide the Admin Menu item/page, false to show. Default is false.
 		 */
 		if ( apply_filters( 'kinsta_admin_disabled', false ) || ! current_user_can( $this->view_role_or_capability ) ) {
 			return;
@@ -222,7 +260,16 @@ class KMP_Admin {
 			array(
 				'id' => 'kinsta-cache-all',
 				'title' => __( 'Clear All Caches', 'kinsta-mu-plugins' ),
-				'href' => wp_nonce_url( admin_url( 'admin.php?page=kinsta-tools&clear-cache=kinsta-clear-all-cache' ), 'kinsta-clear-cache-admin-bar', 'kinsta_nonce' ),
+				'href' => wp_nonce_url(
+					add_query_arg(
+						array(
+							'page' => $this->admin_page->getMenuKey( 'tools' ),
+							'clear-cache' => $this->clear_values['all'],
+						),
+						admin_url( 'admin.php' )
+					),
+					'kinsta-clear-cache-admin-bar'
+				),
 				'parent' => 'kinsta-cache',
 			)
 		);
@@ -231,7 +278,16 @@ class KMP_Admin {
 			array(
 				'id' => 'kinsta-cache-full-page',
 				'title' => __( 'Clear Site Cache', 'kinsta-mu-plugins' ),
-				'href' => wp_nonce_url( admin_url( 'admin.php?page=kinsta-tools&clear-cache=kinsta-clear-site-cache' ), 'kinsta-clear-cache-admin-bar', 'kinsta_nonce' ),
+				'href' => wp_nonce_url(
+					add_query_arg(
+						array(
+							'page' => $this->admin_page->getMenuKey( 'tools' ),
+							'clear-cache' => $this->clear_values['site'],
+						),
+						admin_url( 'admin.php' )
+					),
+					'kinsta-clear-cache-admin-bar'
+				),
 				'parent' => 'kinsta-cache',
 			)
 		);
@@ -240,7 +296,16 @@ class KMP_Admin {
 			array(
 				'id' => 'kinsta-cache-cdn',
 				'title' => __( 'Clear CDN Cache', 'kinsta-mu-plugins' ),
-				'href' => wp_nonce_url( admin_url( 'admin.php?page=kinsta-tools&clear-cache=kinsta-clear-cdn-cache' ), 'kinsta-clear-cache-admin-bar', 'kinsta_nonce' ),
+				'href' => wp_nonce_url(
+					add_query_arg(
+						array(
+							'page' => $this->admin_page->getMenuKey( 'tools' ),
+							'clear-cache' => $this->clear_values['cdn'],
+						),
+						admin_url( 'admin.php' )
+					),
+					'kinsta-clear-cache-admin-bar'
+				),
 				'parent' => 'kinsta-cache',
 			)
 		);
@@ -249,7 +314,16 @@ class KMP_Admin {
 			array(
 				'id' => 'kinsta-cache-object',
 				'title' => __( 'Clear Object Cache', 'kinsta-mu-plugins' ),
-				'href' => wp_nonce_url( admin_url( 'admin.php?page=kinsta-tools&clear-cache=kinsta-clear-object-cache' ), 'kinsta-clear-cache-admin-bar', 'kinsta_nonce' ),
+				'href' => wp_nonce_url(
+					add_query_arg(
+						array(
+							'page' => $this->admin_page->getMenuKey( 'tools' ),
+							'clear-cache' => $this->clear_values['object'],
+						),
+						admin_url( 'admin.php' )
+					),
+					'kinsta-clear-cache-admin-bar'
+				),
 				'parent' => 'kinsta-cache',
 			)
 		);
@@ -283,26 +357,6 @@ class KMP_Admin {
 	}
 
 	/**
-	 * Show Kinsta menu icon.
-	 *
-	 * @return void
-	 */
-	public function menu_icon_style() {
-		?>
-	<style>
-	/* #adminmenu .toplevel_page_kinsta-tools .wp-menu-image {
-		background-repeat:no-repeat;
-		background-position: 50% -28px;
-		background-image: url( '<?php echo esc_url( KMP_Admin::shared_resource_url( 'admin/assets' ) ); ?>/images/menu-icon.svg' )
-	}
-	#adminmenu .toplevel_page_kinsta-tools:hover .wp-menu-image,  #adminmenu .toplevel_page_kinsta-tools.wp-has-current-submenu .wp-menu-image, #adminmenu .toplevel_page_kinsta-tools.current .wp-menu-image {
-		background-position: 50% 6px;
-	} */
-	</style>
-		<?php
-	}
-
-	/**
 	 * Notice that shows for successful cache clear.
 	 * Query var: kinsta-cache-cleared.
 	 *
@@ -311,24 +365,19 @@ class KMP_Admin {
 	 * @return void
 	 */
 	public function cleared_cache_notice() {
-		$output = '';
-		if ( ! empty( $_GET['kinsta-cache-cleared'] ) && 'true' === $_GET['kinsta-cache-cleared'] ) {
-			$output .= '<div class="notice notice-success is-dismissible">';
-			$output .= '<p>' . esc_html__( 'Cache cleared successfully', 'kinsta-mu-plugins' ) . '</p>';
-			$output .= '</div>';
+		$cache_cleared_key = $this->whitelabel->getMenuKey( 'cache-cleared' );
+		$cache_cleared_values = array_values( $this->clear_values );
+		$key = sanitize_key( $_GET[ $cache_cleared_key ] ?? ( $_GET['kinsta-cache-cleared'] ?? '' ) );
+
+		if ( ! in_array( $key, $cache_cleared_values, true ) ) {
+			return;
 		}
-		if ( ! empty( $_GET['kinsta-autopurge-updated'] ) ) {
-			if ( 'disabled' === $_GET['kinsta-autopurge-updated'] ) {
-				$output .= '<div class="notice notice-success is-dismissible">';
-				$output .= '<p>' . esc_html__( 'Autopurge disabled successfully', 'kinsta-mu-plugins' ) . '</p>';
-				$output .= '</div>';
-			} else {
-				$output .= '<div class="notice notice-success is-dismissible">';
-				$output .= '<p>' . esc_html__( 'Autopurge enabled successfully', 'kinsta-mu-plugins' ) . '</p>';
-				$output .= '</div>';
-			}
-		}
-		echo $output;
+
+		?>
+		<div class="notice kinsta-notice notice-success settings-error is-dismissible">
+			<p><strong><?php echo esc_html( $this->get_done_messages( $key ) ); ?></strong></p>
+		</div>
+		<?php
 	}
 
 	/**
@@ -339,18 +388,12 @@ class KMP_Admin {
 	public function action_kinsta_save_custom_path() {
 		check_ajax_referer( 'save_plugin_options', 'kinsta_nonce' );
 
-		$paths = get_option( 'kinsta-cache-additional-paths' );
-		if ( empty( $paths ) ) {
-			$paths = array();
-		}
-
-		$paths[] = array(
-			'path' => sanitize_text_field( $_POST['path'] ),
-			'type' => sanitize_text_field( wp_unslash( $_POST['type'] ) ),
+		( new CustomPaths() )->update(
+			array(
+				'path' => isset( $_POST['path'] ) ? sanitize_text_field( wp_unslash( $_POST['path'] ) ) : '',
+				'type' => isset( $_POST['type'] ) ? sanitize_text_field( wp_unslash( $_POST['type'] ) ) : '',
+			)
 		);
-		$paths = array_values( $paths );
-
-		update_option( 'kinsta-cache-additional-paths', $paths );
 
 		die();
 	}
@@ -362,23 +405,62 @@ class KMP_Admin {
 	 */
 	public function action_kinsta_remove_custom_path() {
 		check_ajax_referer( 'save_plugin_options', 'kinsta_nonce' );
+
 		if ( ! isset( $_POST['index'] ) || ( isset( $_POST['index'] ) && is_int( $_POST['index'] ) ) ) {
 			return;
 		}
 
-		$index = sanitize_text_field( wp_unslash( $_POST['index'] ) );
-		$paths = get_option( 'kinsta-cache-additional-paths' );
-		if ( ! empty( $paths[ $index ] ) ) {
-			unset( $paths[ $index ] );
-		}
-
-		if ( count( $paths ) === 0 ) {
-			delete_option( 'kinsta-cache-additional-paths' );
-		} else {
-			$paths = array_values( $paths );
-			update_option( 'kinsta-cache-additional-paths', $paths );
-		}
+		( new CustomPaths() )->remove(
+			absint( wp_unslash( $_POST['index'] ) ),
+		);
 
 		die();
+	}
+
+	/**
+	 * Action to save settings from the Kinsta Cache settings page.
+	 */
+	public function action_kinsta_cache_save_settings() {
+		check_ajax_referer( 'kinsta_nonce', 'kinsta_nonce' );
+
+		$values = isset( $_POST['values'] ) && is_array( $_POST['values'] )
+			? map_deep( wp_unslash( $_POST['values'] ), 'sanitize_text_field' )
+			: array();
+
+		/**
+		 * Handle the autopurge status.
+		 *
+		 * The value of `kinsta-autopurge-status` is derived from the checkbox
+		 * in the settings page. If the checkbox is checked, the value will
+		 * be 'on', otherwise it will be excluded in the submitted data,
+		 * so we can assume that the checkbox is unchecked.
+		 */
+		update_option(
+			'kinsta-autopurge-status',
+			! isset( $values['kinsta-autopurge-status'] ) ? 'disabled' : 'enabled'
+		);
+
+		die();
+	}
+
+	/**
+	 * Retrieve the message after the cache clearing has been initiated,
+	 * or when the settings have been saved.
+	 *
+	 * @param string $key The key to retrieve the message.
+	 *
+	 * @return string The role or capability.
+	 */
+	public static function get_done_messages( string $key ): string {
+
+		$messages = array(
+			'all-cache' => __( 'All caches were cleared. Changes usually appear globally within a few minutes.', 'kinsta-mu-plugins' ),
+			'site-cache' => __( 'Site cache was cleared. Changes usually appear globally within a few minutes.', 'kinsta-mu-plugins' ),
+			'object-cache' => __( 'Object cache was cleared. Changes usually appear globally within a few minutes.', 'kinsta-mu-plugins' ),
+			'cdn-cache' => __( 'CDN cache was cleared. Changes usually appear globally within a few minutes.', 'kinsta-mu-plugins' ),
+			'kinsta-cache-save-settings' => __( 'Settings saved.', 'kinsta-mu-plugins' ),
+		);
+
+		return $messages[ $key ] ?? __( 'Cache clearing has been initiated.', 'kinsta-mu-plugins' );
 	}
 }

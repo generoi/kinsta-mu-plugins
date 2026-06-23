@@ -7,6 +7,8 @@
 
 namespace Kinsta;
 
+use function Kinsta\KMP\is_whitelabel_enabled;
+
 if ( ! defined( 'ABSPATH' ) ) { // If this file is called directly.
 	die( 'No script kiddies please!' );
 }
@@ -25,7 +27,6 @@ class Banned_Plugins {
 		'all-in-one-wp-migration/all-in-one-wp-migration.php',
 		'allow-php-execute/allow-php-execute.php',
 		'cache-enabler/cache-enabler.php',
-		'dynamic-widgets/dynamic-widgets.php',
 		'inactive-user-deleter/inactive-user-deleter.php',
 		'jch-optimize/jch-optimize.php',
 		'p3-profiler/p3-profiler.php',
@@ -41,7 +42,6 @@ class Banned_Plugins {
 		'exec-php/exec-php.php',
 		'loginwall/loginwall.php',
 		'wp-rss-multi-importer/wp-rss-multi-importer.php',
-		'wp-db-backup-made/wpa-wp.php',
 		'duplicator-pro/duplicator-pro.php', // Duplicator Pro.
 	);
 
@@ -54,9 +54,6 @@ class Banned_Plugins {
 		'backupbuddy/backupbuddy.php',
 		'snapshot/snapshot.php',
 		'sg-cachepress/sg-cachepress.php',
-		'litespeed-cache/litespeed-cache.php',
-		'backwpup/backwpup.php',
-		'backwpup-pro/backwpup.php',
 		'p3/p3.php', // Pipdig Power Pack plugin.
 	);
 
@@ -80,6 +77,7 @@ class Banned_Plugins {
 	 */
 	public function __construct() {
 		$this->check_server_banned_plugin_lists();
+		$this->recheck_disabled_list();
 
 		$this->banned_list = array_merge( $this->warning_list, $this->disabled_list );  // Full list of Banned Plugins.
 		$this->active_plugins = get_option( 'active_plugins', array() );
@@ -182,7 +180,7 @@ class Banned_Plugins {
 	 * for the plugins in the Warning List.
 	 *
 	 * @param array $actions An array of plugin action links. By default this can include 'activate', 'deactivate', and 'delete'.
-	 * @return array The list of action links modfied.
+	 * @return array The list of action links modified.
 	 */
 	public function warning_plugin_action_links( $actions ) {
 
@@ -209,7 +207,7 @@ class Banned_Plugins {
 	 * for the plugins in the Disabled List.
 	 *
 	 * @param array $actions An array of plugin action links. By default this can include 'activate', 'deactivate', and 'delete'.
-	 * @return array The list of action links modfied.
+	 * @return array The list of action links modified.
 	 */
 	public function disabled_plugin_action_links( $actions ) {
 
@@ -263,6 +261,7 @@ class Banned_Plugins {
 	 * @return array
 	 */
 	public function install_plugin_complete_actions( $install_actions, $api, $plugin_file ) {
+		$this->recheck_disabled_list();
 
 		if ( in_array( $plugin_file, $this->banned_list, true ) ) {
 
@@ -299,9 +298,9 @@ class Banned_Plugins {
 	}
 
 	/**
-	 * Get the notice to disapled in the.
+	 * Get the notice to disabled in the.
 	 *
-	 * @return string
+	 * @return array<int,string>
 	 */
 	private function get_notifiable_plugins() {
 		if ( ! function_exists( 'get_plugins' ) ) {
@@ -569,7 +568,7 @@ class Banned_Plugins {
 		$active_banned_plugin_count = 0;
 		foreach ( $active_banned_plugins as $plugin_file ) {
 			if ( array_key_exists( $plugin_file, $installed_plugins ) ) {
-				$active_banned_plugin_count += 1;
+				++$active_banned_plugin_count;
 			}
 		}
 
@@ -602,7 +601,7 @@ class Banned_Plugins {
 			return false;
 		}
 
-		return isset( $current_screen->base ) && ( 'plugins' === $current_screen->base || 'plugin-install' === $current_screen->base );
+		return ( 'plugins' === $current_screen->base || 'plugin-install' === $current_screen->base );
 	}
 
 	/**
@@ -612,8 +611,9 @@ class Banned_Plugins {
 	 */
 	private function check_server_banned_plugin_lists() {
 
-		if ( isset( $_SERVER ) && isset( $_SERVER['KINSTA_BANNED_PLUGINS'] ) ) {
-			$banned_plugins_array = json_decode( $_SERVER['KINSTA_BANNED_PLUGINS'], $assoc_array = true );
+		if ( isset( $_SERVER['KINSTA_BANNED_PLUGINS'] ) ) {
+			$banned_plugins_raw   = sanitize_text_field( wp_unslash( $_SERVER['KINSTA_BANNED_PLUGINS'] ) );
+			$banned_plugins_array = json_decode( $banned_plugins_raw, $assoc_array = true );
 			if ( is_array( $banned_plugins_array ) && isset( $banned_plugins_array['disabled'] ) && isset( $banned_plugins_array['warning'] ) ) {
 
 				if ( is_array( $banned_plugins_array['disabled'] ) ) {
@@ -622,6 +622,32 @@ class Banned_Plugins {
 
 				if ( is_array( $banned_plugins_array['warning'] ) ) {
 					$this->warning_list = $banned_plugins_array['warning'];
+				}
+			}
+		}
+	}
+
+	/**
+	 * Check and evaluate disabled list.
+	 */
+	private function recheck_disabled_list(): void {
+		/**
+		 * Check for BackWPup installs.
+		 */
+		$backwpup_plugins = array(
+			'backwpup/backwpup.php' => WP_CONTENT_DIR . '/plugins/backwpup/backwpup.php',
+			'backwpup-pro/backwpup.php'  => WP_CONTENT_DIR . '/plugins/backwpup-pro/backwpup.php',
+		);
+
+		foreach ( $backwpup_plugins as $plugin_key => $plugin_path ) {
+			if ( is_file( $plugin_path ) ) {
+				$plugin_data = get_plugin_data( $plugin_path );
+				$plugin_ver = trim( $plugin_data['Version'] );
+
+				// Disable if version is less than 5.6.0, or version info cannot be determined.
+				if ( ! $plugin_ver || version_compare( $plugin_ver, '5.6.0', '<' ) ) {
+					$this->disabled_list = array_merge( $this->disabled_list, array( $plugin_key ) );
+					$this->banned_list = array_unique( array_merge( $this->banned_list, array( $plugin_key ) ) );
 				}
 			}
 		}

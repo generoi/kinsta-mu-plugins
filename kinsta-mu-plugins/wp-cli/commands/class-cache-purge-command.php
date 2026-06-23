@@ -76,9 +76,7 @@ class Cache_Purge_Command extends WP_CLI_Command {
 		} else if ( isset( $assoc_args['site'] ) ) {
 			$this->purge_site_cache();
 		} else if ( isset( $assoc_args['all'] ) ) {
-			$this->purge_cdn_cache();
-			$this->purge_site_cache();
-			$this->purge_object_cache();
+			$this->purge_all_caches();
 		} else {
 			// Backwards compatibility.
 			$this->purge_site_cache();
@@ -96,7 +94,6 @@ class Cache_Purge_Command extends WP_CLI_Command {
 
 		if ( is_wp_error( $response ) ) {
 			WP_CLI::error( $response->get_error_message() );
-			return;
 		}
 
 		$body = wp_remote_retrieve_body( $response );
@@ -122,7 +119,6 @@ class Cache_Purge_Command extends WP_CLI_Command {
 
 		if ( is_wp_error( $response ) ) {
 			WP_CLI::error( $response->get_error_message() );
-			return;
 		}
 
 		$body = wp_remote_retrieve_body( $response );
@@ -152,5 +148,20 @@ class Cache_Purge_Command extends WP_CLI_Command {
 		} else {
 			WP_CLI::error( __( 'Something went wrong! The Object Cache was not purged.', 'kinsta-mu-plugins' ) );
 		}
+	}
+
+	/**
+	 * Purge all caches.
+	 *
+	 * @todo The `puge_all_caches` method should collect the results of each cache purge and return a summary,
+	 *       rather than just clearing all caches without feedback. This would improve user experience by providing
+	 *       information on which caches were successfully cleared and which, if any, encountered issues.
+	 *
+	 * @return void
+	 */
+	private function purge_all_caches() {
+		$this->kinsta_cache_purge->purge_complete_caches( true );
+
+		WP_CLI::success( __( 'All caches were cleared. Changes usually appear globally within a few minutes.', 'kinsta-mu-plugins' ) );
 	}
 }
