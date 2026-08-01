@@ -26,6 +26,37 @@ jobs:
           } >> "$GITHUB_ENV"
           rm package.zip
 
+      - name: Build the changelog from the public changelog page
+        run: |
+          set -uo pipefail
+
+          # The zip carries no changelog and the download is a plain file with no
+          # metadata endpoint behind it, so there is nothing to extract from the
+          # update itself — every release here has had blank notes. Kinsta does
+          # publish the history, as a normal web page.
+          curl -sSL --max-time 60 --retry 3 --retry-delay 5 \
+            -o changelog.html "https://kinsta.com/changelog/mu-plugin-changelog/"
+
+          # `--atx-headers` because pandoc otherwise writes the version as a
+          # setext heading (underlined with dashes), which no `^#### ` extractor
+          # can see. `markdown_strict-raw_html` drops the surrounding markup so
+          # the notes read as plain text.
+          docker run --rm -v "$PWD:/w" -w /w pandoc/core:2.9 \
+            --from=html --to=markdown_strict-raw_html --atx-headers \
+            --output=changelog.md changelog.html
+
+          # `3.6.0 (June 02, 2026)` -> `#### 3.6.0`, the shape the extractor wants.
+          sed -E -i 's/^#{1,3} +v?([0-9][0-9.]*[0-9])([^0-9].*)?$/#### \1/' changelog.md
+          mv changelog.md /tmp/changelog.md
+          rm -f changelog.html
+
+          # The page trails the releases: it documents 3.6.0 while 3.6.1 is out,
+          # so a bump can legitimately find nothing. Notes are cosmetic, so warn
+          # rather than fail and let the update proceed.
+          if ! grep -q "^#### ${LATEST_VERSION}\$" /tmp/changelog.md; then
+            echo "::warning title=Version not on the changelog page::${LATEST_VERSION} is not documented at https://kinsta.com/changelog/mu-plugin-changelog/ yet, so this release will have blank notes."
+          fi
+
       - name: Update repo
         uses: generoi/github-action-update-plugins@master
         id: update
@@ -33,6 +64,11 @@ jobs:
           download_url: "https://kinsta.com/kinsta-tools/kinsta-mu-plugins.zip"
           version: ${{ env.LATEST_VERSION }}
           strip_archive_folder: 'false'
+          # `|-`, not `|`: a trailing newline here would push the action's
+          # `>> /tmp/commit-message` redirect onto its own line, sending the
+          # changelog to stdout and leaving the release body empty.
+          changelog_extract: |-
+            awk -v ver=${{ env.LATEST_VERSION }} '/^#### / { if (p) { exit }; if ($2 == ver) { p=1; next } } p && NF' /tmp/changelog.md 2>&1
 
   update-satis:
     needs: build
